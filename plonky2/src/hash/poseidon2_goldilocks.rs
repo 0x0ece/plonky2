@@ -21,19 +21,29 @@ impl Poseidon for GoldilocksField {
     const MDS_MATRIX_CIRC: [u64; 12] = [17, 15, 41, 16, 2, 28, 13, 13, 39, 18, 34, 20];
     const MDS_MATRIX_DIAG: [u64; 12] = [8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 
-    const FAST_PARTIAL_FIRST_ROUND_CONSTANT: [u64; 12]  = [
-        0x3cc3f892184df408, 0xe993fd841e7e97f1, 0xf2831d3575f0f3af, 0xd2500e0a350994ca,
-        0xc5571f35d7288633, 0x91d89c5184109a02, 0xf37f925d04e5667b, 0x2d6e448371955a69,
-        0x740ef19ce01398a1, 0x694d24c0752fdf45, 0x60936af96ee2f148, 0xc33448feadc78f0c,
-    ];
-
     const FAST_PARTIAL_ROUND_CONSTANTS: [u64; N_PARTIAL_ROUNDS]  = [
-        0x74cb2e819ae421ab, 0xd2559d2370e7f663, 0x62bf78acf843d17c, 0xd5ab7b67e14d1fb4,
-        0xb9fe2ae6e0969bdc, 0xe33fdf79f92a10e8, 0x0ea2bb4c2b25989b, 0xca9121fbf9d38f06,
-        0xbdd9b0aa81f58fa4, 0x83079fa4ecf20d7e, 0x650b838edfcc4ad3, 0x77180c88583c76ac,
-        0xaf8c20753143a180, 0xb8ccfe9989a39175, 0x954a1729f60cc9c5, 0xdeb5b550c4dca53b,
-        0xf01bb0b00f77011e, 0xa1ebb404b676afd9, 0x860b6e1597a0173e, 0x308bb65a036acbce,
-        0x1aca78f31c97c876, 0x0,
+        0xe3ecbb6ba1e16211,
+        0x70f5b3266792bbb6,
+        0xe7560e690634757e,
+        0xafd0202bc7eaf66e,
+        0x349f4c5871f220fd,
+        0x3697eb3e31529e0d,
+        0x7735d5b0622d9900,
+        0x5f5b58b9cf997668,
+        0x645534b6548af9d9,
+        0x4232d29d91a426a8,
+        0xb987278aed485d35,
+        0x6dabeef669bb406e,
+        0x35ee78288b749d40,
+        0x6dcd560f14af0fc3,
+        0x71ed3dc007ea6383,
+        0x8b6b51caab7f5b6f,
+        0xcf2e8cc4181dbfa8,
+        0xa01d3f1c306f825a,
+        0xccee646a5d8ddb87,
+        0x70df6f277cbaffeb,
+        0x64ec0a6556b8f45c,
+        0x6f68c9664fda6e37,
     ];
 
     const FAST_PARTIAL_ROUND_VS: [[u64; 12 - 1]; N_PARTIAL_ROUNDS] = [
