@@ -30,22 +30,6 @@ pub const N_PARTIAL_ROUNDS: usize = 22;
 pub const N_ROUNDS: usize = N_FULL_ROUNDS_TOTAL + N_PARTIAL_ROUNDS;
 const MAX_WIDTH: usize = 12; // we only have width 8 and 12, and 12 is bigger. :)
 
-#[inline(always)]
-fn add_u160_u128((x_lo, x_hi): (u128, u32), y: u128) -> (u128, u32) {
-    let (res_lo, over) = x_lo.overflowing_add(y);
-    let res_hi = x_hi + (over as u32);
-    (res_lo, res_hi)
-}
-
-#[inline(always)]
-fn reduce_u160<F: PrimeField64>((n_lo, n_hi): (u128, u32)) -> F {
-    let n_lo_hi = (n_lo >> 64) as u64;
-    let n_lo_lo = n_lo as u64;
-    let reduced_hi: u64 = F::from_noncanonical_u96((n_lo_hi, n_hi)).to_noncanonical_u64();
-    let reduced128: u128 = ((reduced_hi as u128) << 64) + (n_lo_lo as u128);
-    F::from_noncanonical_u128(reduced128)
-}
-
 /// Note that these work for the Goldilocks field, but not necessarily others. See
 /// `generate_constants` about how these were generated. We include enough for a WIDTH of 12;
 /// smaller widths just use a subset.
@@ -174,22 +158,33 @@ pub trait Poseidon: PrimeField64 {
 
     #[inline(always)]
     #[unroll_for_loops]
-    fn mds_layer(state_: &[Self; WIDTH]) -> [Self; WIDTH] {
+    fn mds_layer(state: &[Self; WIDTH]) -> [Self; WIDTH] {
         let mut result = [Self::ZERO; WIDTH];
+        let mut stored = [Self::ZERO; 4];
+        let four = Self::from_canonical_u8(4);
 
-        let mut state = [0u64; WIDTH];
-        for r in 0..WIDTH {
-            state[r] = state_[r].to_noncanonical_u64();
+        // Applying cheap 4x4 MDS matrix to each 4-element part of the state
+        for i in 0..3 {
+            let start_index = i * 4;
+            let t0 = state[start_index] + state[start_index + 1];
+            let t1 = state[start_index + 2] + state[start_index + 3];
+            let t2 = t1.multiply_accumulate(state[start_index + 1], Self::TWO);
+            let t3 = t0.multiply_accumulate(state[start_index + 3], Self::TWO);
+            let t4 = t3.multiply_accumulate(t1, four);
+            let t5 = t2.multiply_accumulate(t0, four);
+
+            result[start_index] = t3 + t5;
+            result[start_index + 1] = t5;
+            result[start_index + 2] = t2 + t4;
+            result[start_index + 3] = t4;
         }
 
-        // This is a hacky way of fully unrolling the loop.
-        for r in 0..12 {
-            if r < WIDTH {
-                let sum = Self::mds_row_shf(r, &state);
-                let sum_lo = sum as u64;
-                let sum_hi = (sum >> 64) as u32;
-                result[r] = Self::from_noncanonical_u96((sum_lo, sum_hi));
-            }
+        // Applying second cheap matrix
+        for i in 0..4 {
+            stored[i] = result[i] + result[4 + i] + result[8 + i];
+        }
+        for i in 0..12 {
+            result[i] += stored[i % 4];
         }
 
         result
@@ -245,90 +240,23 @@ pub trait Poseidon: PrimeField64 {
 
     #[inline(always)]
     #[unroll_for_loops]
-    fn mds_partial_layer_init<F: FieldExtension<D, BaseField = Self>, const D: usize>(
-        state: &[F; WIDTH],
-    ) -> [F; WIDTH] {
-        let mut result = [F::ZERO; WIDTH];
-
-        // Initial matrix has first row/column = [1, 0, ..., 0];
-
-        // c = 0
-        result[0] = state[0];
-
-        for r in 1..12 {
-            if r < WIDTH {
-                for c in 1..12 {
-                    if c < WIDTH {
-                        // NB: FAST_PARTIAL_ROUND_INITIAL_MATRIX is stored in
-                        // row-major order so that this dot product is cache
-                        // friendly.
-                        let t = F::from_canonical_u64(
-                            Self::FAST_PARTIAL_ROUND_INITIAL_MATRIX[r - 1][c - 1],
-                        );
-                        result[c] += state[r] * t;
-                    }
-                }
-            }
-        }
-        result
-    }
-
-    /// Recursive version of `mds_partial_layer_init`.
-    fn mds_partial_layer_init_circuit<const D: usize>(
-        builder: &mut CircuitBuilder<Self, D>,
-        state: &[ExtensionTarget<D>; WIDTH],
-    ) -> [ExtensionTarget<D>; WIDTH]
-    where
-        Self: RichField + Extendable<D>,
-    {
-        let mut result = [builder.zero_extension(); WIDTH];
-
-        result[0] = state[0];
-
-        for r in 1..WIDTH {
-            for c in 1..WIDTH {
-                let t = <Self as Poseidon>::FAST_PARTIAL_ROUND_INITIAL_MATRIX[r - 1][c - 1];
-                let t = Self::Extension::from_canonical_u64(t);
-                let t = builder.constant_extension(t);
-                result[c] = builder.mul_add_extension(t, state[r], result[c]);
-            }
-        }
-        result
-    }
-
-    /// Computes s*A where s is the state row vector and A is the matrix
-    ///
-    ///    [ M_00  | v  ]
-    ///    [ ------+--- ]
-    ///    [ w_hat | Id ]
-    ///
-    /// M_00 is a scalar, v is 1x(t-1), w_hat is (t-1)x1 and Id is the
-    /// (t-1)x(t-1) identity matrix.
-    #[inline(always)]
-    #[unroll_for_loops]
     fn mds_partial_layer_fast(state: &[Self; WIDTH], r: usize) -> [Self; WIDTH] {
-        // Set d = [M_00 | w^] dot [state]
-
-        let mut d_sum = (0u128, 0u32); // u160 accumulator
+        let mut sum = state[0].to_noncanonical_u64() as u128;
         for i in 1..12 {
             if i < WIDTH {
-                let t = Self::FAST_PARTIAL_ROUND_W_HATS[r][i - 1] as u128;
                 let si = state[i].to_noncanonical_u64() as u128;
-                d_sum = add_u160_u128(d_sum, si * t);
+                sum += si;
             }
         }
-        let s0 = state[0].to_noncanonical_u64() as u128;
-        let mds0to0 = (Self::MDS_MATRIX_CIRC[0] + Self::MDS_MATRIX_DIAG[0]) as u128;
-        d_sum = add_u160_u128(d_sum, s0 * mds0to0);
-        let d = reduce_u160::<Self>(d_sum);
+        let sum_lo = sum as u64;
+        let sum_hi = (sum >> 64) as u32;
+        let sum = Self::from_noncanonical_u96((sum_lo, sum_hi));
 
-        // result = [d] concat [state[0] * v + state[shift up by 1]]
         let mut result = [Self::ZERO; WIDTH];
-        result[0] = d;
-        for i in 1..12 {
+        for i in 0..12 {
             if i < WIDTH {
-                let t = Self::from_canonical_u64(Self::FAST_PARTIAL_ROUND_VS[r][i - 1]);
-                result[i] = state[i].multiply_accumulate(state[0], t);
+                let t = Self::from_canonical_u64(Self::MDS_MATRIX_DIAG[i]);
+                result[i] = sum.multiply_accumulate(state[i], t);
             }
         }
         result
@@ -474,7 +402,7 @@ pub trait Poseidon: PrimeField64 {
         Self: RichField + Extendable<D>,
     {
         for i in 0..WIDTH {
-            state[i] = <Self as Poseidon>::sbox_monomial_circuit(builder, state[i]);
+            state[i] = Self::sbox_monomial_circuit(builder, state[i]);
         }
     }
 
@@ -510,30 +438,6 @@ pub trait Poseidon: PrimeField64 {
 
         Self::full_rounds(&mut state, &mut round_ctr);
         Self::partial_rounds(&mut state, &mut round_ctr);
-        Self::full_rounds(&mut state, &mut round_ctr);
-        debug_assert_eq!(round_ctr, N_ROUNDS);
-
-        state
-    }
-
-    // For testing only, to ensure that various tricks are correct.
-    #[inline]
-    fn partial_rounds_naive(state: &mut [Self; WIDTH], round_ctr: &mut usize) {
-        for _ in 0..N_PARTIAL_ROUNDS {
-            Self::constant_layer(state, *round_ctr);
-            state[0] = Self::sbox_monomial(state[0]);
-            *state = Self::mds_layer(state);
-            *round_ctr += 1;
-        }
-    }
-
-    #[inline]
-    fn poseidon_naive(input: [Self; WIDTH]) -> [Self; WIDTH] {
-        let mut state = input;
-        let mut round_ctr = 0;
-
-        Self::full_rounds(&mut state, &mut round_ctr);
-        Self::partial_rounds_naive(&mut state, &mut round_ctr);
         Self::full_rounds(&mut state, &mut round_ctr);
         debug_assert_eq!(round_ctr, N_ROUNDS);
 
@@ -614,25 +518,11 @@ pub(crate) mod test_helpers {
                 input[i] = F::from_canonical_u64(input_[i]);
             }
             let output = F::poseidon(input);
+            println!("{:x?}", output);
             for i in 0..SPONGE_WIDTH {
                 let ex_output = F::from_canonical_u64(expected_output_[i]);
                 assert_eq!(output[i], ex_output);
             }
-        }
-    }
-
-    pub(crate) fn check_consistency<F: Field>()
-    where
-        F: Poseidon,
-    {
-        let mut input = [F::ZERO; SPONGE_WIDTH];
-        for i in 0..SPONGE_WIDTH {
-            input[i] = F::from_canonical_u64(i as u64);
-        }
-        let output = F::poseidon(input);
-        let output_naive = F::poseidon_naive(input);
-        for i in 0..SPONGE_WIDTH {
-            assert_eq!(output[i], output_naive[i]);
         }
     }
 }

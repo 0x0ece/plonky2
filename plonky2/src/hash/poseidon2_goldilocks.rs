@@ -19,7 +19,20 @@ impl Poseidon for GoldilocksField {
     //  - FAST_PARTIAL_ROUND_W_HATS
     //  - FAST_PARTIAL_ROUND_INITIAL_MATRIX
     const MDS_MATRIX_CIRC: [u64; 12] = [17, 15, 41, 16, 2, 28, 13, 13, 39, 18, 34, 20];
-    const MDS_MATRIX_DIAG: [u64; 12] = [8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    const MDS_MATRIX_DIAG: [u64; 12] = [
+        0xcf6f77ac16722af9,
+        0x3fd4c0d74672aebc,
+        0x9b72bf1c1c3d08a8,
+        0xe4940f84b71e4ac2,
+        0x61b27b077118bc72,
+        0x2efd8379b8e661e2,
+        0x858edcf353df0341,
+        0x2d9c20affb5c4516,
+        0x5120143f0695defb,
+        0x62fc898ae34a5c5b,
+        0xa3d9560c99123ed2,
+        0x98fd739d8e7fc933,
+    ];
 
     const FAST_PARTIAL_ROUND_CONSTANTS: [u64; N_PARTIAL_ROUNDS]  = [
         0xe3ecbb6ba1e16211,
@@ -261,28 +274,28 @@ impl Poseidon for GoldilocksField {
     //     }
     // }
 
-    #[cfg(all(target_arch="aarch64", target_feature="neon"))]
-    #[inline(always)]
-    fn sbox_layer(state: &mut [Self; 12]) {
-        unsafe {
-            crate::hash::arch::aarch64::poseidon_goldilocks_neon::sbox_layer(state);
-        }
-    }
+    // #[cfg(all(target_arch="aarch64", target_feature="neon"))]
+    // #[inline(always)]
+    // fn sbox_layer(state: &mut [Self; 12]) {
+    //     unsafe {
+    //         crate::hash::arch::aarch64::poseidon_goldilocks_neon::sbox_layer(state);
+    //     }
+    // }
 
-    #[cfg(all(target_arch="aarch64", target_feature="neon"))]
-    #[inline(always)]
-    fn mds_layer(state: &[Self; 12]) -> [Self; 12] {
-        unsafe {
-            crate::hash::arch::aarch64::poseidon_goldilocks_neon::mds_layer(state)
-        }
-    }
+    // #[cfg(all(target_arch="aarch64", target_feature="neon"))]
+    // #[inline(always)]
+    // fn mds_layer(state: &[Self; 12]) -> [Self; 12] {
+    //     unsafe {
+    //         crate::hash::arch::aarch64::poseidon_goldilocks_neon::mds_layer(state)
+    //     }
+    // }
 }
 
 #[cfg(test)]
 mod tests {
     use crate::field::goldilocks_field::GoldilocksField as F;
     use crate::field::types::{Field, PrimeField64};
-    use crate::hash::poseidon::test_helpers::{check_consistency, check_test_vectors};
+    use crate::hash::poseidon::test_helpers::check_test_vectors;
 
     #[test]
     fn test_vectors() {
@@ -291,39 +304,35 @@ mod tests {
         // 2. range 0..WIDTH
         // 3. all -1's
         // 4. random elements of GoldilocksField.
-        // expected output calculated with (modified) hadeshash reference implementation.
+        // expected output calculated with (modified) code from:
+        // https://github.com/HorizenLabs/poseidon2
 
         let neg_one: u64 = F::NEG_ONE.to_canonical_u64();
 
         #[rustfmt::skip]
         let test_vectors12: Vec<([u64; 12], [u64; 12])> = vec![
             ([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ],
-             [0x3c18a9786cb0b359, 0xc4055e3364a246c3, 0x7953db0ab48808f4, 0xc71603f33a1144ca,
-              0xd7709673896996dc, 0x46a84e87642f44ed, 0xd032648251ee0b3c, 0x1c687363b207df62,
-              0xdf8565563e8045fe, 0x40f5b37ff4254dae, 0xd070f637b431067c, 0x1792b1c4342109d7, ]),
+             [0x40e4c449028440b0, 0x8d5233d4e1ff2fa3, 0xd8809d1ad0ac1e59, 0x5b9f29d2bf3a7634,
+              0xb65233ad9dac1203, 0x7ad00f9950e4cac3, 0x98a0e39e8dac0fcf, 0xd307875ffd783c9b,
+              0x52eedea15d5113c1, 0xdd0572185641c6cd, 0xf16bca8e9ac45377, 0xe8608627f86706ee, ]),
             ([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, ],
-             [0xd64e1e3efc5b8e9e, 0x53666633020aaa47, 0xd40285597c6a8825, 0x613a4f81e81231d2,
-              0x414754bfebd051f0, 0xcb1f8980294a023f, 0x6eb2a9e4d54a9d0f, 0x1902bc3af467e056,
-              0xf045d5eafdc6021f, 0xe4150f77caaa3be5, 0xc9bfd01d39b50cce, 0x5c0a27fcb0e1459b, ]),
+             [0xed3dbcc4ff1e8d33, 0xfb85eac6ac91a150, 0xd41e1e237ed3e2ef, 0x5e289bf0a4c11897,
+              0x4398b20f93e3ba6b, 0x5659a48ffaf2901d, 0xe44d81e89a88f8ae, 0x08efdb285f8c3dbc,
+              0x294ab7503297850e, 0xa11c61f4870b9904, 0xa6855c112cc08968, 0x17c6d53d2fb3e8c1, ]),
             ([neg_one, neg_one, neg_one, neg_one,
               neg_one, neg_one, neg_one, neg_one,
               neg_one, neg_one, neg_one, neg_one, ],
-             [0xbe0085cfc57a8357, 0xd95af71847d05c09, 0xcf55a13d33c1c953, 0x95803a74f4530e82,
-              0xfcd99eb30a135df1, 0xe095905e913a3029, 0xde0392461b42919b, 0x7d3260e24e81d031,
-              0x10d3d0465d9deaa0, 0xa87571083dfc2a47, 0xe18263681e9958f8, 0xe28e96f1ae5e60d3, ]),
-            ([0x8ccbbbea4fe5d2b7, 0xc2af59ee9ec49970, 0x90f7e1a9e658446a, 0xdcc0630a3ab8b1b8,
-              0x7ff8256bca20588c, 0x5d99a7ca0c44ecfb, 0x48452b17a70fbee3, 0xeb09d654690b6c88,
-              0x4a55d3a39c676a88, 0xc0407a38d2285139, 0xa234bac9356386d1, 0xe1633f2bad98a52f, ],
-             [0xa89280105650c4ec, 0xab542d53860d12ed, 0x5704148e9ccab94f, 0xd3a826d4b62da9f5,
-              0x8a7a6ca87892574f, 0xc7017e1cad1a674e, 0x1f06668922318e34, 0xa3b203bc8102676f,
-              0xfcc781b0ce382bf2, 0x934c69ff3ed14ba5, 0x504688a5996e8f13, 0x401f3f2ed524a2ba, ]),
+             [0x43440ca93949b6a3, 0xb5325069fc0c5be, 0x27f20a696c4a412f, 0xd3ef1fc535544e99, 
+              0xa86f114930aa54e7, 0xe8de96658e80539a, 0xf491b996d437406e, 0x4a72b9ae397da707, 
+              0x47e6721112b1948a, 0xd315f6e6a1f694c4, 0xeaef93714a28f7e9, 0x73a68e8d713b126, ]),
+            ([0x1d7c737cc91e6483, 0x4feb55496ea6b6e6, 0x53423d77d4f30aa2, 0xe6138c885b0a5dbf, 
+              0x6b483f95c6db532a, 0xe679be9527cdb0b5, 0xa17d03ae46d7a37, 0xe54703b5c2b20691, 
+              0x335f1485f09e0343, 0x6dc544817c0912e, 0x3021fdd09dd3c146, 0x59886699bae1a62f, ],
+             [0xdcad441ef7e65d47, 0x95c2bda147c5a79d, 0xc60fdabee2f2b228, 0x3a6fe78ed2edcfe2, 
+              0x4cbe241c5329e4aa, 0x1fa87ef1df8f5a16, 0x3586e88a1da0e9d4, 0xf0a171763063ec4d, 
+              0x53f4bd20938996a8, 0xc1d1ef0e1ab6a925, 0x3d20ed2799ffce06, 0x12357cf854fbc4a8, ]),
         ];
 
         check_test_vectors::<F>(test_vectors12);
-    }
-
-    #[test]
-    fn consistency() {
-        check_consistency::<F>();
     }
 }

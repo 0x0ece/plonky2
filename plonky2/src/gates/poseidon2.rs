@@ -149,7 +149,6 @@ impl<F: RichField + Extendable<D>, const D: usize> Gate<F, D> for PoseidonGate<F
         }
 
         // Partial rounds.
-        state = <F as Poseidon>::mds_partial_layer_init(&state);
         for r in 0..(poseidon::N_PARTIAL_ROUNDS - 1) {
             state[0] +=
                 F::Extension::from_canonical_u64(<F as Poseidon>::FAST_PARTIAL_ROUND_CONSTANTS[r]);
@@ -236,7 +235,6 @@ impl<F: RichField + Extendable<D>, const D: usize> Gate<F, D> for PoseidonGate<F
         }
 
         // Partial rounds.
-        state = <F as Poseidon>::mds_partial_layer_init(&state);
         for r in 0..(poseidon::N_PARTIAL_ROUNDS - 1) {
             state[0] += F::from_canonical_u64(<F as Poseidon>::FAST_PARTIAL_ROUND_CONSTANTS[r]);
             let sbox_in = vars.local_wires[Self::wire_partial_sbox(r)];
@@ -336,7 +334,6 @@ impl<F: RichField + Extendable<D>, const D: usize> Gate<F, D> for PoseidonGate<F
                 round_ctr += 1;
             }
         } else {
-            state = <F as Poseidon>::mds_partial_layer_init_circuit(builder, &state);
             for r in 0..(poseidon::N_PARTIAL_ROUNDS - 1) {
                 let c = <F as Poseidon>::FAST_PARTIAL_ROUND_CONSTANTS[r];
                 let c = F::Extension::from_canonical_u64(c);
@@ -470,7 +467,6 @@ impl<F: RichField + Extendable<D> + Poseidon, const D: usize> SimpleGenerator<F>
             round_ctr += 1;
         }
 
-        state = <F as Poseidon>::mds_partial_layer_init(&state);
         for r in 0..(poseidon::N_PARTIAL_ROUNDS - 1) {
             out_buffer.set_wire(
                 local_wire(PoseidonGate::<F, D>::wire_partial_sbox(r)),

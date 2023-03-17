@@ -13,12 +13,12 @@ pub mod noop;
 pub mod packed_util;
 #[cfg(feature = "poseidon1")]
 pub mod poseidon;
-#[cfg(feature = "poseidon1")]
-pub mod poseidon_mds;
 #[cfg(not(feature = "poseidon1"))]
 pub mod poseidon2;
 #[cfg(not(feature = "poseidon1"))]
 pub mod poseidon2_mds;
+#[cfg(feature = "poseidon1")]
+pub mod poseidon_mds;
 pub mod public_input;
 pub mod random_access;
 pub mod reducing;
