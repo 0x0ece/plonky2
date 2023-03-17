@@ -69,79 +69,11 @@ pub trait Poseidon: PrimeField64 {
 
     // The MDS matrix we use is C + D, where C is the circulant matrix whose first row is given by
     // `MDS_MATRIX_CIRC`, and D is the diagonal matrix whose diagonal is given by `MDS_MATRIX_DIAG`.
-    const MDS_MATRIX_CIRC: [u64; WIDTH];
     const MDS_MATRIX_DIAG: [u64; WIDTH];
 
     // Precomputed constants for the fast Poseidon calculation. See
     // the paper.
     const FAST_PARTIAL_ROUND_CONSTANTS: [u64; N_PARTIAL_ROUNDS];
-    const FAST_PARTIAL_ROUND_VS: [[u64; WIDTH - 1]; N_PARTIAL_ROUNDS];
-    const FAST_PARTIAL_ROUND_W_HATS: [[u64; WIDTH - 1]; N_PARTIAL_ROUNDS];
-    const FAST_PARTIAL_ROUND_INITIAL_MATRIX: [[u64; WIDTH - 1]; WIDTH - 1];
-
-    #[inline(always)]
-    #[unroll_for_loops]
-    fn mds_row_shf(r: usize, v: &[u64; WIDTH]) -> u128 {
-        debug_assert!(r < WIDTH);
-        // The values of `MDS_MATRIX_CIRC` and `MDS_MATRIX_DIAG` are
-        // known to be small, so we can accumulate all the products for
-        // each row and reduce just once at the end (done by the
-        // caller).
-
-        // NB: Unrolling this, calculating each term independently, and
-        // summing at the end, didn't improve performance for me.
-        let mut res = 0u128;
-
-        // This is a hacky way of fully unrolling the loop.
-        for i in 0..12 {
-            if i < WIDTH {
-                res += (v[(i + r) % WIDTH] as u128) * (Self::MDS_MATRIX_CIRC[i] as u128);
-            }
-        }
-        res += (v[r] as u128) * (Self::MDS_MATRIX_DIAG[r] as u128);
-
-        res
-    }
-
-    /// Same as `mds_row_shf` for field extensions of `Self`.
-    fn mds_row_shf_field<F: FieldExtension<D, BaseField = Self>, const D: usize>(
-        r: usize,
-        v: &[F; WIDTH],
-    ) -> F {
-        debug_assert!(r < WIDTH);
-        let mut res = F::ZERO;
-
-        for i in 0..WIDTH {
-            res += v[(i + r) % WIDTH] * F::from_canonical_u64(Self::MDS_MATRIX_CIRC[i]);
-        }
-        res += v[r] * F::from_canonical_u64(Self::MDS_MATRIX_DIAG[r]);
-
-        res
-    }
-
-    /// Recursive version of `mds_row_shf`.
-    fn mds_row_shf_circuit<const D: usize>(
-        builder: &mut CircuitBuilder<Self, D>,
-        r: usize,
-        v: &[ExtensionTarget<D>; WIDTH],
-    ) -> ExtensionTarget<D>
-    where
-        Self: RichField + Extendable<D>,
-    {
-        debug_assert!(r < WIDTH);
-        let mut res = builder.zero_extension();
-
-        for i in 0..WIDTH {
-            let c = Self::from_canonical_u64(<Self as Poseidon>::MDS_MATRIX_CIRC[i]);
-            res = builder.mul_const_add_extension(c, v[(i + r) % WIDTH], res);
-        }
-        {
-            let c = Self::from_canonical_u64(<Self as Poseidon>::MDS_MATRIX_DIAG[r]);
-            res = builder.mul_const_add_extension(c, v[r], res);
-        }
-
-        res
-    }
 
     #[inline(always)]
     #[unroll_for_loops]
@@ -221,22 +153,22 @@ pub trait Poseidon: PrimeField64 {
         Self: RichField + Extendable<D>,
     {
         // If we have enough routed wires, we will use PoseidonMdsGate.
-        // let mds_gate = PoseidonMdsGate::<Self, D>::new();
-        // if builder.config.num_routed_wires >= mds_gate.num_wires() {
-        //     let index = builder.add_gate(mds_gate, vec![]);
-        //     for i in 0..WIDTH {
-        //         let input_wire = PoseidonMdsGate::<Self, D>::wires_input(i);
-        //         builder.connect_extension(state[i], ExtensionTarget::from_range(index, input_wire));
-        //     }
-        //     (0..WIDTH)
-        //         .map(|i| {
-        //             let output_wire = PoseidonMdsGate::<Self, D>::wires_output(i);
-        //             ExtensionTarget::from_range(index, output_wire)
-        //         })
-        //         .collect::<Vec<_>>()
-        //         .try_into()
-        //         .unwrap()
-        // } else {
+        let mds_gate = PoseidonMdsGate::<Self, D>::new();
+        if builder.config.num_routed_wires >= mds_gate.num_wires() {
+            let index = builder.add_gate(mds_gate, vec![]);
+            for i in 0..WIDTH {
+                let input_wire = PoseidonMdsGate::<Self, D>::wires_input(i);
+                builder.connect_extension(state[i], ExtensionTarget::from_range(index, input_wire));
+            }
+            (0..WIDTH)
+                .map(|i| {
+                    let output_wire = PoseidonMdsGate::<Self, D>::wires_output(i);
+                    ExtensionTarget::from_range(index, output_wire)
+                })
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap()
+        } else {
             let mut result = [builder.zero_extension(); WIDTH];
             let mut stored = [builder.zero_extension(); 4];
             let two = builder.constant(Self::TWO);
@@ -251,13 +183,13 @@ pub trait Poseidon: PrimeField64 {
                 let t3 = builder.scalar_mul_add_extension(two, state[start_index + 3], t0);
                 let t4 = builder.scalar_mul_add_extension(four, t1, t3);
                 let t5 = builder.scalar_mul_add_extension(four, t0, t2);
-    
+
                 result[start_index] = builder.add_extension(t3, t5);
                 result[start_index + 1] = t5;
                 result[start_index + 2] = builder.add_extension(t2, t4);
                 result[start_index + 3] = t4;
             }
-    
+
             // Applying second cheap matrix
             for i in 0..4 {
                 stored[i] = builder.add_many_extension(&[result[i], result[4 + i], result[8 + i]]);
@@ -265,9 +197,9 @@ pub trait Poseidon: PrimeField64 {
             for i in 0..12 {
                 result[i] = builder.add_extension(result[i], stored[i % 4]);
             }
-    
+
             result
-        // }
+        }
     }
 
     #[inline(always)]

@@ -41,59 +41,36 @@ impl<F: RichField + Extendable<D> + Poseidon, const D: usize> PoseidonMdsGate<F,
 
     // Following are methods analogous to ones in `Poseidon`, but for extension algebras.
 
-    /// Same as `mds_row_shf` for an extension algebra of `F`.
-    fn mds_row_shf_algebra(
-        r: usize,
-        v: &[ExtensionAlgebra<F::Extension, D>; SPONGE_WIDTH],
-    ) -> ExtensionAlgebra<F::Extension, D> {
-        debug_assert!(r < SPONGE_WIDTH);
-        let mut res = ExtensionAlgebra::ZERO;
-
-        for i in 0..SPONGE_WIDTH {
-            let coeff = F::Extension::from_canonical_u64(<F as Poseidon>::MDS_MATRIX_CIRC[i]);
-            res += v[(i + r) % SPONGE_WIDTH].scalar_mul(coeff);
-        }
-        {
-            let coeff = F::Extension::from_canonical_u64(<F as Poseidon>::MDS_MATRIX_DIAG[r]);
-            res += v[r].scalar_mul(coeff);
-        }
-
-        res
-    }
-
-    /// Same as `mds_row_shf_recursive` for an extension algebra of `F`.
-    fn mds_row_shf_algebra_circuit(
-        builder: &mut CircuitBuilder<F, D>,
-        r: usize,
-        v: &[ExtensionAlgebraTarget<D>; SPONGE_WIDTH],
-    ) -> ExtensionAlgebraTarget<D> {
-        debug_assert!(r < SPONGE_WIDTH);
-        let mut res = builder.zero_ext_algebra();
-
-        for i in 0..SPONGE_WIDTH {
-            let coeff = builder.constant_extension(F::Extension::from_canonical_u64(
-                <F as Poseidon>::MDS_MATRIX_CIRC[i],
-            ));
-            res = builder.scalar_mul_add_ext_algebra(coeff, v[(i + r) % SPONGE_WIDTH], res);
-        }
-        {
-            let coeff = builder.constant_extension(F::Extension::from_canonical_u64(
-                <F as Poseidon>::MDS_MATRIX_DIAG[r],
-            ));
-            res = builder.scalar_mul_add_ext_algebra(coeff, v[r], res);
-        }
-
-        res
-    }
-
     /// Same as `mds_layer` for an extension algebra of `F`.
     fn mds_layer_algebra(
         state: &[ExtensionAlgebra<F::Extension, D>; SPONGE_WIDTH],
     ) -> [ExtensionAlgebra<F::Extension, D>; SPONGE_WIDTH] {
         let mut result = [ExtensionAlgebra::ZERO; SPONGE_WIDTH];
+        let mut stored = [ExtensionAlgebra::ZERO; 4];
+        let four = F::Extension::from_canonical_u8(4);
 
-        for r in 0..SPONGE_WIDTH {
-            result[r] = Self::mds_row_shf_algebra(r, state);
+        // Applying cheap 4x4 MDS matrix to each 4-element part of the state
+        for i in 0..3 {
+            let start_index = i * 4;
+            let t0 = state[start_index] + state[start_index + 1];
+            let t1 = state[start_index + 2] + state[start_index + 3];
+            let t2 = t1 + state[start_index + 1] + state[start_index + 1];
+            let t3 = t0 + state[start_index + 3] + state[start_index + 3];
+            let t4 = t3 + t1.scalar_mul(four);
+            let t5 = t2 + t0.scalar_mul(four);
+
+            result[start_index] = t3 + t5;
+            result[start_index + 1] = t5;
+            result[start_index + 2] = t2 + t4;
+            result[start_index + 3] = t4;
+        }
+
+        // Applying second cheap matrix
+        for i in 0..4 {
+            stored[i] = result[i] + result[4 + i] + result[8 + i];
+        }
+        for i in 0..12 {
+            result[i] += stored[i % 4];
         }
 
         result
@@ -105,9 +82,33 @@ impl<F: RichField + Extendable<D> + Poseidon, const D: usize> PoseidonMdsGate<F,
         state: &[ExtensionAlgebraTarget<D>; SPONGE_WIDTH],
     ) -> [ExtensionAlgebraTarget<D>; SPONGE_WIDTH] {
         let mut result = [builder.zero_ext_algebra(); SPONGE_WIDTH];
+        let mut stored = [builder.zero_ext_algebra(); 4];
+        let two = builder.constant_extension(F::Extension::TWO);
+        let four = builder.constant_extension(F::Extension::from_canonical_u8(4));
 
-        for r in 0..SPONGE_WIDTH {
-            result[r] = Self::mds_row_shf_algebra_circuit(builder, r, state);
+        // Applying cheap 4x4 MDS matrix to each 4-element part of the state
+        for i in 0..3 {
+            let start_index = i * 4;
+            let t0 = builder.add_ext_algebra(state[start_index], state[start_index + 1]);
+            let t1 = builder.add_ext_algebra(state[start_index + 2], state[start_index + 3]);
+            let t2 = builder.scalar_mul_add_ext_algebra(two, state[start_index + 1], t1);
+            let t3 = builder.scalar_mul_add_ext_algebra(two, state[start_index + 3], t0);
+            let t4 = builder.scalar_mul_add_ext_algebra(four, t1, t3);
+            let t5 = builder.scalar_mul_add_ext_algebra(four, t0, t2);
+
+            result[start_index] = builder.add_ext_algebra(t3, t5);
+            result[start_index + 1] = t5;
+            result[start_index + 2] = builder.add_ext_algebra(t2, t4);
+            result[start_index + 3] = t4;
+        }
+
+        // Applying second cheap matrix
+        for i in 0..4 {
+            stored[i] = builder.add_ext_algebra(result[i], result[4 + i]);
+            stored[i] = builder.add_ext_algebra(stored[i], result[8 + i]);
+        }
+        for i in 0..12 {
+            result[i] = builder.add_ext_algebra(result[i], stored[i % 4]);
         }
 
         result
