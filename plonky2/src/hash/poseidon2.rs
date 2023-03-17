@@ -1,5 +1,5 @@
-//! Implementation of the Poseidon hash function, as described in
-//! <https://eprint.iacr.org/2019/458.pdf>
+//! Implementation of the Poseidon2 hash function, as described in
+//! <https://eprint.iacr.org/2023/323.pdf>
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -18,30 +18,17 @@ use crate::iop::target::{BoolTarget, Target};
 use crate::plonk::circuit_builder::CircuitBuilder;
 use crate::plonk::config::{AlgebraicHasher, Hasher};
 
-// The number of full rounds and partial rounds is given by the
-// calc_round_numbers.py script. They happen to be the same for both
-// width 8 and width 12 with s-box x^7.
-//
 // NB: Changing any of these values will require regenerating all of
 // the precomputed constant arrays in this file.
 pub const HALF_N_FULL_ROUNDS: usize = 4;
 pub(crate) const N_FULL_ROUNDS_TOTAL: usize = 2 * HALF_N_FULL_ROUNDS;
 pub const N_PARTIAL_ROUNDS: usize = 22;
 pub const N_ROUNDS: usize = N_FULL_ROUNDS_TOTAL + N_PARTIAL_ROUNDS;
-const MAX_WIDTH: usize = 12; // we only have width 8 and 12, and 12 is bigger. :)
+const MAX_WIDTH: usize = 12;
 
-/// Note that these work for the Goldilocks field, but not necessarily others. See
-/// `generate_constants` about how these were generated. We include enough for a WIDTH of 12;
-/// smaller widths just use a subset.
+/// Note that these work for the Goldilocks field, but not necessarily others.
 #[rustfmt::skip]
 pub const ALL_ROUND_CONSTANTS: [u64; MAX_WIDTH * N_ROUNDS]  = [
-    // WARNING: The AVX2 Goldilocks specialization relies on all round constants being in
-    // 0..0xfffeeac900011537. If these constants are randomly regenerated, there is a ~.6% chance
-    // that this condition will no longer hold.
-    //
-    // WARNING: If these are changed in any way, then all the
-    // implementations of Poseidon must be regenerated. See comments
-    // in `poseidon_goldilocks.rs`.
     0xe034a8785fd284a7, 0xe2463f1ea42e1b80, 0x048742e681ae290a, 0xe4af50ade990154c, 0x8b13ffaaf4f78f8a, 0xe3fbead7dccd8d63, 0x631a47705eb92bf8, 0x88fbbb8698548659, 0x74cd2003b0f349c9, 0xe16a3df6764a3f5d, 0x57ce63971a71aaa2, 0xdc1f7fd3e7823051,
     0xbb8423be34c18d7a, 0xf8bc5a2a0c1b3d6d, 0xf1a01bbd6f7123e5, 0xed960a080f5e348b, 0x1b9c0c1e87e2390e, 0x18c83caf729a613e, 0x671ab9fe037a72c4, 0x508565f67d4c276a, 0x4d2cd8827a482590, 0xa48e11e84dd3500b, 0x825a8c955fc2442b, 0xf573a6ee07cddc68,
     0x7dd3f19c73a39e0b, 0xcc0f13537a796fa6, 0x1d9006bfaedac57f, 0x4705f69b68b0b7de, 0x5b62bfb718bcc57f, 0x879d821770563827, 0x3da5ccb7f8dff0e3, 0xb49d6a706923fc5b, 0xb6a0babe883a969d, 0x2984f9b055401960, 0xcd3496f05511d79d, 0x4791da5d63854fc5,
@@ -195,9 +182,31 @@ pub trait Poseidon: PrimeField64 {
         state: &[F; WIDTH],
     ) -> [F; WIDTH] {
         let mut result = [F::ZERO; WIDTH];
+        let mut stored = [F::ZERO; 4];
+        let four = F::from_canonical_u8(4);
 
-        for r in 0..WIDTH {
-            result[r] = Self::mds_row_shf_field(r, state);
+        // Applying cheap 4x4 MDS matrix to each 4-element part of the state
+        for i in 0..3 {
+            let start_index = i * 4;
+            let t0 = state[start_index] + state[start_index + 1];
+            let t1 = state[start_index + 2] + state[start_index + 3];
+            let t2 = t1.multiply_accumulate(state[start_index + 1], F::TWO);
+            let t3 = t0.multiply_accumulate(state[start_index + 3], F::TWO);
+            let t4 = t3.multiply_accumulate(t1, four);
+            let t5 = t2.multiply_accumulate(t0, four);
+
+            result[start_index] = t3 + t5;
+            result[start_index + 1] = t5;
+            result[start_index + 2] = t2 + t4;
+            result[start_index + 3] = t4;
+        }
+
+        // Applying second cheap matrix
+        for i in 0..4 {
+            stored[i] = result[i] + result[4 + i] + result[8 + i];
+        }
+        for i in 0..12 {
+            result[i] += stored[i % 4];
         }
 
         result
@@ -212,35 +221,58 @@ pub trait Poseidon: PrimeField64 {
         Self: RichField + Extendable<D>,
     {
         // If we have enough routed wires, we will use PoseidonMdsGate.
-        let mds_gate = PoseidonMdsGate::<Self, D>::new();
-        if builder.config.num_routed_wires >= mds_gate.num_wires() {
-            let index = builder.add_gate(mds_gate, vec![]);
-            for i in 0..WIDTH {
-                let input_wire = PoseidonMdsGate::<Self, D>::wires_input(i);
-                builder.connect_extension(state[i], ExtensionTarget::from_range(index, input_wire));
-            }
-            (0..WIDTH)
-                .map(|i| {
-                    let output_wire = PoseidonMdsGate::<Self, D>::wires_output(i);
-                    ExtensionTarget::from_range(index, output_wire)
-                })
-                .collect::<Vec<_>>()
-                .try_into()
-                .unwrap()
-        } else {
+        // let mds_gate = PoseidonMdsGate::<Self, D>::new();
+        // if builder.config.num_routed_wires >= mds_gate.num_wires() {
+        //     let index = builder.add_gate(mds_gate, vec![]);
+        //     for i in 0..WIDTH {
+        //         let input_wire = PoseidonMdsGate::<Self, D>::wires_input(i);
+        //         builder.connect_extension(state[i], ExtensionTarget::from_range(index, input_wire));
+        //     }
+        //     (0..WIDTH)
+        //         .map(|i| {
+        //             let output_wire = PoseidonMdsGate::<Self, D>::wires_output(i);
+        //             ExtensionTarget::from_range(index, output_wire)
+        //         })
+        //         .collect::<Vec<_>>()
+        //         .try_into()
+        //         .unwrap()
+        // } else {
             let mut result = [builder.zero_extension(); WIDTH];
+            let mut stored = [builder.zero_extension(); 4];
+            let two = builder.constant(Self::TWO);
+            let four = builder.constant(Self::from_canonical_u8(4));
 
-            for r in 0..WIDTH {
-                result[r] = Self::mds_row_shf_circuit(builder, r, state);
+            // Applying cheap 4x4 MDS matrix to each 4-element part of the state
+            for i in 0..3 {
+                let start_index = i * 4;
+                let t0 = builder.add_extension(state[start_index], state[start_index + 1]);
+                let t1 = builder.add_extension(state[start_index + 2], state[start_index + 3]);
+                let t2 = builder.scalar_mul_add_extension(two, state[start_index + 1], t1);
+                let t3 = builder.scalar_mul_add_extension(two, state[start_index + 3], t0);
+                let t4 = builder.scalar_mul_add_extension(four, t1, t3);
+                let t5 = builder.scalar_mul_add_extension(four, t0, t2);
+    
+                result[start_index] = builder.add_extension(t3, t5);
+                result[start_index + 1] = t5;
+                result[start_index + 2] = builder.add_extension(t2, t4);
+                result[start_index + 3] = t4;
             }
-
+    
+            // Applying second cheap matrix
+            for i in 0..4 {
+                stored[i] = builder.add_many_extension(&[result[i], result[4 + i], result[8 + i]]);
+            }
+            for i in 0..12 {
+                result[i] = builder.add_extension(result[i], stored[i % 4]);
+            }
+    
             result
-        }
+        // }
     }
 
     #[inline(always)]
     #[unroll_for_loops]
-    fn mds_partial_layer_fast(state: &[Self; WIDTH], r: usize) -> [Self; WIDTH] {
+    fn mds_partial_layer_fast(state: &[Self; WIDTH]) -> [Self; WIDTH] {
         let mut sum = state[0].to_noncanonical_u64() as u128;
         for i in 1..12 {
             if i < WIDTH {
@@ -265,22 +297,20 @@ pub trait Poseidon: PrimeField64 {
     /// Same as `mds_partial_layer_fast` for field extensions of `Self`.
     fn mds_partial_layer_fast_field<F: FieldExtension<D, BaseField = Self>, const D: usize>(
         state: &[F; WIDTH],
-        r: usize,
     ) -> [F; WIDTH] {
-        let s0 = state[0];
-        let mds0to0 = Self::MDS_MATRIX_CIRC[0] + Self::MDS_MATRIX_DIAG[0];
-        let mut d = s0 * F::from_canonical_u64(mds0to0);
-        for i in 1..WIDTH {
-            let t = F::from_canonical_u64(Self::FAST_PARTIAL_ROUND_W_HATS[r][i - 1]);
-            d += state[i] * t;
+        let mut sum = state[0];
+        for i in 1..12 {
+            if i < WIDTH {
+                sum += state[i];
+            }
         }
 
-        // result = [d] concat [state[0] * v + state[shift up by 1]]
         let mut result = [F::ZERO; WIDTH];
-        result[0] = d;
-        for i in 1..WIDTH {
-            let t = F::from_canonical_u64(Self::FAST_PARTIAL_ROUND_VS[r][i - 1]);
-            result[i] = state[0] * t + state[i];
+        for i in 0..12 {
+            if i < WIDTH {
+                let t = F::from_canonical_u64(Self::MDS_MATRIX_DIAG[i]);
+                result[i] = sum.multiply_accumulate(state[i], t);
+            }
         }
         result
     }
@@ -289,28 +319,25 @@ pub trait Poseidon: PrimeField64 {
     fn mds_partial_layer_fast_circuit<const D: usize>(
         builder: &mut CircuitBuilder<Self, D>,
         state: &[ExtensionTarget<D>; WIDTH],
-        r: usize,
     ) -> [ExtensionTarget<D>; WIDTH]
     where
         Self: RichField + Extendable<D>,
     {
-        let s0 = state[0];
-        let mds0to0 = Self::MDS_MATRIX_CIRC[0] + Self::MDS_MATRIX_DIAG[0];
-        let mut d = builder.mul_const_extension(Self::from_canonical_u64(mds0to0), s0);
-        for i in 1..WIDTH {
-            let t = <Self as Poseidon>::FAST_PARTIAL_ROUND_W_HATS[r][i - 1];
-            let t = Self::Extension::from_canonical_u64(t);
-            let t = builder.constant_extension(t);
-            d = builder.mul_add_extension(t, state[i], d);
+        let mut sum = state[0];
+        for i in 1..12 {
+            if i < WIDTH {
+                sum = builder.add_extension(sum, state[i]);
+            }
         }
 
         let mut result = [builder.zero_extension(); WIDTH];
-        result[0] = d;
-        for i in 1..WIDTH {
-            let t = <Self as Poseidon>::FAST_PARTIAL_ROUND_VS[r][i - 1];
-            let t = Self::Extension::from_canonical_u64(t);
-            let t = builder.constant_extension(t);
-            result[i] = builder.mul_add_extension(t, state[0], state[i]);
+        for i in 0..12 {
+            if i < WIDTH {
+                let t = <Self as Poseidon>::MDS_MATRIX_DIAG[i];
+                let t = Self::Extension::from_canonical_u64(t);
+                let t = builder.constant_extension(t);
+                result[i] = builder.mul_add_extension(state[i], t, sum);
+            }
         }
         result
     }
@@ -423,7 +450,7 @@ pub trait Poseidon: PrimeField64 {
                 state[0] = state[0].add_canonical_u64(Self::FAST_PARTIAL_ROUND_CONSTANTS[i]);
             }
             state[0] = Self::sbox_monomial(state[0]);
-            *state = Self::mds_partial_layer_fast(state, i);
+            *state = Self::mds_partial_layer_fast(state);
         }
         *round_ctr += N_PARTIAL_ROUNDS;
     }
@@ -518,7 +545,6 @@ pub(crate) mod test_helpers {
                 input[i] = F::from_canonical_u64(input_[i]);
             }
             let output = F::poseidon(input);
-            println!("{:x?}", output);
             for i in 0..SPONGE_WIDTH {
                 let ex_output = F::from_canonical_u64(expected_output_[i]);
                 assert_eq!(output[i], ex_output);
