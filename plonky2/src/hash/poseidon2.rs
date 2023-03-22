@@ -75,35 +75,40 @@ pub trait Poseidon: PrimeField64 {
     // the paper.
     const FAST_PARTIAL_ROUND_CONSTANTS: [u64; N_PARTIAL_ROUNDS];
 
-    #[inline(always)]
-    #[unroll_for_loops]
     fn mds_layer(state: &[Self; WIDTH]) -> [Self; WIDTH] {
         let mut result = [Self::ZERO; WIDTH];
-        let mut stored = [Self::ZERO; 4];
-        let four = Self::from_canonical_u8(4);
+        let mut result_u128 = [0u128; WIDTH];
+        let mut stored = [0u128; 4];
 
         // Applying cheap 4x4 MDS matrix to each 4-element part of the state
         for i in 0..3 {
             let start_index = i * 4;
-            let t0 = state[start_index] + state[start_index + 1];
-            let t1 = state[start_index + 2] + state[start_index + 3];
-            let t2 = t1.multiply_accumulate(state[start_index + 1], Self::TWO);
-            let t3 = t0.multiply_accumulate(state[start_index + 3], Self::TWO);
-            let t4 = t3.multiply_accumulate(t1, four);
-            let t5 = t2.multiply_accumulate(t0, four);
+            let s0 = state[start_index].to_noncanonical_u64() as u128;
+            let s1 = state[start_index + 1].to_noncanonical_u64() as u128;
+            let s2 = state[start_index + 2].to_noncanonical_u64() as u128;
+            let s3 = state[start_index + 3].to_noncanonical_u64() as u128;
+            let t0 = s0 + s1;
+            let t1 = s2 + s3;
+            let t2 = t1 + 2 * s1;
+            let t3 = t0 + 2 * s3;
+            let t4 = t3 + 4 * t1;
+            let t5 = t2 + 4 * t0;
 
-            result[start_index] = t3 + t5;
-            result[start_index + 1] = t5;
-            result[start_index + 2] = t2 + t4;
-            result[start_index + 3] = t4;
+            result_u128[start_index] = t3 + t5;
+            result_u128[start_index + 1] = t5;
+            result_u128[start_index + 2] = t2 + t4;
+            result_u128[start_index + 3] = t4;
         }
 
         // Applying second cheap matrix
         for i in 0..4 {
-            stored[i] = result[i] + result[4 + i] + result[8 + i];
+            stored[i] = result_u128[i] + result_u128[4 + i] + result_u128[8 + i];
         }
         for i in 0..12 {
-            result[i] += stored[i % 4];
+            let sum = result_u128[i] + stored[i % 4];
+            let sum_lo = sum as u64;
+            let sum_hi = (sum >> 64) as u32;
+            result[i] = Self::from_noncanonical_u96((sum_lo, sum_hi));
         }
 
         result
@@ -202,8 +207,7 @@ pub trait Poseidon: PrimeField64 {
         }
     }
 
-    #[inline(always)]
-    #[unroll_for_loops]
+    #[inline]
     fn mds_partial_layer_fast(state: &[Self; WIDTH]) -> [Self; WIDTH] {
         let mut sum = state[0].to_noncanonical_u64() as u128;
         for i in 1..12 {
